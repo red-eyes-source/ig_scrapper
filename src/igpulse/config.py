@@ -144,6 +144,19 @@ class IngestCfg(BaseModel):
     own_side: FigureIngestCfg
 
 
+class CostCfg(BaseModel):
+    """Indicative rates for the `plan` estimator only.
+
+    Nothing in the ingest or analysis path reads these — they exist so a cost
+    estimate can be produced without a network call, and so the numbers live in
+    config rather than being buried in a print statement.
+    """
+
+    instagram_scraper_per_1k: float = Field(ge=0)
+    comment_scraper_per_1k: float = Field(ge=0)
+    sentiment_per_1k: float = Field(ge=0)
+
+
 class PrivacyCfg(BaseModel):
     narrative_retention_days: int = Field(gt=0)
     store_narrative_text: bool
@@ -222,6 +235,7 @@ class Settings(BaseModel):
     apify: ApifyCfg
     sentiment: SentimentCfg
     ingest: IngestCfg
+    cost: CostCfg
     privacy: PrivacyCfg
     analysis: AnalysisCfg
     report: ReportCfg

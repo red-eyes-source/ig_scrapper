@@ -1,0 +1,126 @@
+# Smoke-test settings — minimum volume that still exercises every code path.
+#
+# Generated from config/settings.yaml with the volume knobs turned down. A full
+# smoke cycle collects ~5 posts and ~15 comments and costs a few cents.
+#
+#   python run.py --config-dir config/smoke plan
+#   python run.py --config-dir config/smoke pipeline
+#
+# min_term_frequency is 1 here because a five-post corpus has no term appearing
+# five times; leave it at 5 in production or every typo becomes a "theme".
+project:
+  name: ig-pulse
+  client_label: smoke
+  timezone: Asia/Kolkata
+apify:
+  base_url: https://api.apify.com/v2
+  actors:
+    instagram_scraper: apify~instagram-scraper
+    instagram_comment_scraper: apify~instagram-comment-scraper
+  rate_limit:
+    requests_per_second: 4.0
+    burst: 8
+  timeouts:
+    connect_seconds: 10.0
+    read_seconds: 60.0
+  retry:
+    max_attempts: 5
+    initial_backoff_seconds: 2.0
+    max_backoff_seconds: 60.0
+    retry_on_status:
+    - 429
+    - 500
+    - 502
+    - 503
+    - 504
+  run_polling:
+    interval_seconds: 10.0
+    max_wait_seconds: 1800.0
+  dataset:
+    page_size: 1000
+sentiment:
+  provider: apify_actor
+  actor_id: easyapi~text-sentiment-analysis
+  input_field: text
+  field_map:
+    label: sentiment
+    score: value
+  label_normalisation:
+    positive:
+    - positive
+    - POSITIVE
+    - pos
+    - LABEL_2
+    negative:
+    - negative
+    - NEGATIVE
+    - neg
+    - LABEL_0
+    neutral:
+    - neutral
+    - NEUTRAL
+    - neu
+    - LABEL_1
+  batch_size: 20
+  min_chars: 12
+  min_confidence: 0.6
+ingest:
+  narrative:
+    results_per_term: 5
+    comments_per_post: 3
+    lookback: 3 days
+    include_nested_comments: false
+  public_figure:
+    posts_per_handle: 3
+    comments_per_post: 3
+    lookback: 30 days
+  own_side:
+    posts_per_handle: 3
+    comments_per_post: 3
+    lookback: 30 days
+cost:
+  instagram_scraper_per_1k: 1.5
+  comment_scraper_per_1k: 1.5
+  sentiment_per_1k: 2.99
+privacy:
+  narrative_retention_days: 90
+  store_narrative_text: true
+  max_public_figures: 10
+analysis:
+  themes:
+    min_term_frequency: 1
+    max_themes_per_report: 25
+    ngram_range:
+    - 1
+    - 3
+    stopword_extra:
+    - india
+    - instagram
+    - reel
+    - follow
+    - link in bio
+  metrics:
+    trend_window_days: 7
+    comparison_window_days: 28
+report:
+  output_dir: out/smoke
+  docx:
+    template: null
+    include_sections:
+    - narrative
+    - public_figure
+    - own_side
+    - methodology
+  html:
+    self_contained: true
+    include_sections:
+    - narrative
+    - public_figure
+    - own_side
+database:
+  pool_min_size: 1
+  pool_max_size: 8
+  statement_timeout_ms: 60000
+logging:
+  level: INFO
+  format: '%(asctime)s %(levelname)-8s %(name)s: %(message)s'

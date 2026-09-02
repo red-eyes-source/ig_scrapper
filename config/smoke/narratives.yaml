@@ -1,0 +1,17 @@
+# Smoke-test narrative.
+#
+# Deliberately apolitical and high-volume. The point of the smoke test is to
+# prove the plumbing works — actor auth, pagination, the identity gate,
+# sentiment field mapping, theme extraction, both report writers. A civic
+# infrastructure topic returns results reliably at any hour, in mixed
+# English/Hinglish (which is exactly what you want for checking whether the
+# sentiment actor copes), and costs a few cents.
+#
+# Do not point the smoke config at your real narratives. If it fails you want
+# to know the pipeline is broken, not spend real budget finding out.
+
+narratives:
+  - key: "rail_infra"
+    label: "Railway infrastructure"
+    hashtags: ["#indianrailways"]
+    terms: []

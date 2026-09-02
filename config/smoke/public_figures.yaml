@@ -1,0 +1,25 @@
+# Smoke-test allowlist — intentionally empty on first run.
+#
+# Step 1 of the smoke test (narrative lens only) needs nothing here. It already
+# exercises the identity gate: every author found under the hashtag is
+# non-allowlisted, so every one takes the pseudonym branch. That is the branch
+# most of your data will follow in production, so it is the one worth proving
+# first.
+#
+# Step 2 verifies the named branch. Add ONE account you unambiguously control
+# or that is unambiguously institutional — your client's own handle is the
+# right choice, with category own_side — then re-run. You should see it appear
+# by name in figure_snapshot and in the report's own-side section, while
+# commenters on its posts stay pseudonymous in figure_post_comment.
+#
+# Verifying both branches is the whole point. If a handle you did not add shows
+# up by name anywhere, something is wrong — open an issue rather than shipping.
+
+figures: []
+# figures:
+#   - handle: "your_client_handle"
+#     display_name: "Client Main Account"
+#     category: "own_side"
+#     jurisdiction: null
+#     justification: "Client's own primary Instagram account, tracked with
+#       their knowledge as the baseline for own-side performance reporting."

@@ -69,6 +69,14 @@ ingest:
     comments_per_post: 100
     lookback: "30 days"
 
+cost:
+  # Indicative Apify store rates, USD per 1,000 results. These change and vary
+  # by plan tier — check your own console and update. Used only by
+  # `run.py plan` to produce an upper-bound estimate; nothing else reads them.
+  instagram_scraper_per_1k: 1.50
+  comment_scraper_per_1k: 1.50
+  sentiment_per_1k: 2.99
+
 privacy:
   # Retention for narrative-lens rows, which are overwhelmingly authored by
   # private individuals. Public-figure and own-side rows are exempt because

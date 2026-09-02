@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ig-pulse CLI.
 
+    python run.py plan               # dry-run volume + cost estimate
     python run.py test-connection
     python run.py init-db
     python run.py ingest --lens all
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from dotenv import load_dotenv  # noqa: E402
 
 from igpulse.analyze import metrics as metrics_mod  # noqa: E402
+from igpulse.analyze import planner  # noqa: E402
 from igpulse.analyze import sentiment as sentiment_mod  # noqa: E402
 from igpulse.analyze import themes as themes_mod  # noqa: E402
 from igpulse.apify.client import ApifyClient  # noqa: E402
@@ -81,6 +83,44 @@ def cmd_validate(cfg: AppConfig, _args: argparse.Namespace) -> int:
     if not figures:
         print("WARNING: allowlist is empty — the public-figure and own-side "
               "lenses will collect nothing.", file=sys.stderr)
+    return 0
+
+
+def cmd_plan(cfg: AppConfig, _args: argparse.Namespace) -> int:
+    """Show what a full cycle would collect and roughly cost. No network."""
+    plan = planner.plan_cycle(cfg)
+    cost = plan.cost(cfg)
+
+    for lens_plan in plan.lenses:
+        print(f"{lens_plan.lens}")
+        for line in lens_plan.detail:
+            print(f"  {line}")
+        print(f"  -> {lens_plan.actor_runs} actor run(s), "
+              f"up to {lens_plan.max_posts:,} posts + "
+              f"{lens_plan.max_comments:,} comments")
+        print()
+
+    print(f"{'TOTAL':<22}{plan.total_actor_runs:>8} actor runs")
+    print(f"{'':<22}{plan.total_items:>8,} items "
+          f"({plan.total_posts:,} posts + {plan.total_comments:,} comments)")
+    print()
+    print("Upper-bound cost estimate (USD)")
+    print(f"  post scraping      {cost['scraping']:>9.2f}")
+    print(f"  comment scraping   {cost['comments']:>9.2f}")
+    print(f"  sentiment          {cost['sentiment']:>9.2f}")
+    print(f"  {'total':<18} {cost['total']:>9.2f}")
+    print()
+    print("Ceiling, not a forecast: search returns fewer results than "
+          "requested for narrow terms,")
+    print("not every post has the requested comment count, and short text is "
+          "never sent for scoring.")
+    print("Rates are from config/settings.yaml -> cost; verify against your "
+          "Apify plan.")
+
+    if plan.warnings:
+        print()
+        for warning in plan.warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
     return 0
 
 
@@ -303,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("validate").set_defaults(func=cmd_validate)
+    sub.add_parser("plan").set_defaults(func=cmd_plan)
     sub.add_parser("test-connection").set_defaults(func=cmd_test_connection)
     sub.add_parser("init-db").set_defaults(func=cmd_init_db)
     sub.add_parser("purge").set_defaults(func=cmd_purge)
