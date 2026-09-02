@@ -1,0 +1,119 @@
+# ig-pulse — single source of truth for all runtime constants.
+# Nothing in src/ may hardcode a value that belongs here.
+
+project:
+  name: "ig-pulse"
+  client_label: "client"          # used in report headers/filenames
+  timezone: "Asia/Kolkata"        # report-facing tz; all storage is UTC
+
+apify:
+  base_url: "https://api.apify.com/v2"
+  # Actor IDs use the tilde form in API paths (owner~name).
+  actors:
+    instagram_scraper: "apify~instagram-scraper"
+    instagram_comment_scraper: "apify~instagram-comment-scraper"
+  # Client-side throttle. Apify's own limit is account-tier dependent;
+  # this keeps us well under it and makes runs reproducible.
+  rate_limit:
+    requests_per_second: 4.0
+    burst: 8
+  timeouts:
+    connect_seconds: 10.0
+    read_seconds: 60.0
+  retry:
+    max_attempts: 5
+    initial_backoff_seconds: 2.0
+    max_backoff_seconds: 60.0
+    retry_on_status: [429, 500, 502, 503, 504]
+  run_polling:
+    interval_seconds: 10.0
+    max_wait_seconds: 1800.0
+  dataset:
+    page_size: 1000              # Apify caps items-per-request; page under it
+
+sentiment:
+  # Provider is pluggable: swap actor_id + field_map to benchmark alternatives
+  # without touching code. Output schemas for store sentiment actors are thinly
+  # documented, so field_map is validated against the first response at runtime.
+  provider: "apify_actor"
+  actor_id: "easyapi~text-sentiment-analysis"
+  input_field: "text"
+  field_map:
+    label: "sentiment"           # actor's field holding positive/negative/neutral
+    score: "value"               # actor's field holding the confidence 0..1
+  label_normalisation:
+    positive: ["positive", "POSITIVE", "pos", "LABEL_2"]
+    negative: ["negative", "NEGATIVE", "neg", "LABEL_0"]
+    neutral:  ["neutral",  "NEUTRAL",  "neu", "LABEL_1"]
+  batch_size: 100
+  # Text below this length is skipped (emoji-only / single-word comments carry
+  # no reliable signal and cost money to score).
+  min_chars: 12
+  # Code-mixed Hinglish is a known weak spot for these actors. Rows scoring
+  # below this confidence are recorded as 'uncertain' rather than forced
+  # into a bucket, so reports don't launder low-confidence noise as signal.
+  min_confidence: 0.60
+
+ingest:
+  narrative:
+    results_per_term: 200
+    comments_per_post: 50
+    lookback: "7 days"           # Apify onlyPostsNewerThan relative form
+    include_nested_comments: false
+  public_figure:
+    posts_per_handle: 50
+    comments_per_post: 50
+    lookback: "30 days"
+  own_side:
+    posts_per_handle: 100
+    comments_per_post: 100
+    lookback: "30 days"
+
+privacy:
+  # Retention for narrative-lens rows, which are overwhelmingly authored by
+  # private individuals. Public-figure and own-side rows are exempt because
+  # those subjects are on the curated allowlist.
+  narrative_retention_days: 90
+  # Raw caption/comment text is needed for theme extraction. When false, only
+  # derived sentiment and theme labels are stored.
+  store_narrative_text: true
+  # Hard cap: refuse to start if the allowlist exceeds this, as a tripwire
+  # against the list quietly growing into a general-purpose watchlist.
+  max_public_figures: 250
+
+analysis:
+  themes:
+    min_term_frequency: 5
+    max_themes_per_report: 25
+    ngram_range: [1, 3]
+    # Terms too generic to be a theme. Extend per client vertical.
+    stopword_extra:
+      - "india"
+      - "instagram"
+      - "reel"
+      - "follow"
+      - "link in bio"
+  metrics:
+    # Engagement rate denominators; follower counts are only available for
+    # allowlisted figures, so narrative engagement is absolute, not rate-based.
+    trend_window_days: 7
+    comparison_window_days: 28
+
+report:
+  output_dir: "out"
+  docx:
+    template: null                # null = build from scratch
+    include_sections: ["narrative", "public_figure", "own_side", "methodology"]
+  html:
+    self_contained: true
+    include_sections: ["narrative", "public_figure", "own_side"]
+
+database:
+  # Connection comes from PG* env vars; only pool sizing lives here.
+  pool_min_size: 1
+  pool_max_size: 8
+  statement_timeout_ms: 60000
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s %(levelname)-8s %(name)s: %(message)s"

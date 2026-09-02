@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+out/
+*.docx
+*.html
+!src/igpulse/report/templates/*.html
+.pytest_cache/
+.DS_Store

@@ -1,0 +1,23 @@
+# Narrative lens targets. These are ISSUES and FRAMINGS, not people.
+#
+# Each narrative is a named bucket of hashtags and search terms. Posts matching
+# a bucket are aggregated into that narrative's metrics. Author identity is
+# never persisted from this lens (see src/igpulse/privacy/author_policy.py).
+#
+# Keep buckets issue-shaped ("farm policy criticism") rather than actor-shaped
+# ("posts by X"). Actor-shaped buckets defeat the aggregation model and will
+# fail review.
+
+narratives: []
+# Example shape (delete before use):
+#
+# narratives:
+#   - key: "farm_policy"
+#     label: "Farm policy and MSP"
+#     hashtags: ["#msp", "#farmerprotest"]
+#     terms: ["minimum support price", "mandi reform"]
+#
+#   - key: "unemployment"
+#     label: "Jobs and unemployment"
+#     hashtags: ["#unemployment", "#jobcrisis"]
+#     terms: ["job creation", "recruitment exam"]

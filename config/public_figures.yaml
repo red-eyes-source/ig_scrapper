@@ -1,0 +1,34 @@
+# The ONLY source of persistently-identified accounts in this system.
+#
+# Inclusion rule — an entry must satisfy at least one of:
+#   elected_official   : currently holds or is formally contesting public office
+#   party_official     : official account of a registered political party or its
+#                        named office-bearers acting in that capacity
+#   registered_media   : registered news organisation or a journalist publicly
+#                        employed by one, posting in a professional capacity
+#   own_side           : the client's own accounts and declared surrogates
+#
+# `justification` is mandatory and free-text. If you cannot write one that
+# stands on its own, the account does not belong here. Private citizens,
+# anonymous accounts, and small creators are out of scope by design — they
+# contribute to aggregate narrative metrics only, under per-run pseudonyms.
+#
+# Loader enforces: unique handles, valid category, non-empty justification,
+# and the max_public_figures cap in settings.yaml.
+
+figures: []
+# Example shape (delete before use):
+#
+# figures:
+#   - handle: "example_mp_handle"
+#     display_name: "A. N. Example"
+#     category: "elected_official"
+#     jurisdiction: "Lok Sabha — Example Constituency"
+#     justification: "Sitting Member of Parliament; account is their public
+#       constituency communication channel, listed on the Lok Sabha website."
+#
+#   - handle: "example_news_org"
+#     display_name: "Example News"
+#     category: "registered_media"
+#     jurisdiction: "National"
+#     justification: "RNI-registered news organisation; official masthead account."
