@@ -61,19 +61,107 @@ Narrative rows are purged after `privacy.narrative_retention_days` (default
 
 ## Setup
 
+### 1. Install
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-cp .env.example .env       # add APIFY_TOKEN and PG* credentials
-createdb igpulse           # or point PG* at an existing instance
-
-python run.py validate     # config check — no network, no Apify credits
-python run.py init-db      # apply schema, sync allowlist
 ```
 
-Then fill in `config/narratives.yaml` and `config/public_figures.yaml`. Both
-ship empty on purpose.
+### 2. Get your Apify API token
+
+1. Sign in at [console.apify.com](https://console.apify.com).
+2. **Settings → API & Integrations** → copy the **Personal API token**
+   (starts `apify_api_`).
+3. Treat it like a password. It has full access to your account, including
+   billing-relevant actions — anyone holding it can spend your credits.
+
+Token scope note: a Personal API token covers everything this pipeline does.
+If you would rather scope it down, create a **scoped token** limited to
+"Run Actors" plus "Read datasets" — that is the full set of permissions
+`ig-pulse` needs.
+
+### 3. Credentials
+
+```bash
+cp .env.example .env
+```
+
+Fill in:
+
+| Variable | What it is |
+|---|---|
+| `APIFY_TOKEN` | the token from step 2 |
+| `PGHOST` / `PGPORT` | Postgres host and port (`localhost` / `5432` locally) |
+| `PGDATABASE` | database name (`igpulse`) |
+| `PGUSER` / `PGPASSWORD` | Postgres credentials |
+
+`.env` is gitignored. It should never be committed — if it ever is, rotate the
+token in the Apify console immediately rather than just deleting the file, as
+the value stays in git history.
+
+For a scheduled deployment, set the same variables as real environment
+variables (systemd unit, container env, CI secret) rather than shipping a
+`.env` file. `load_dotenv()` will not override variables already present in the
+environment, so both work side by side.
+
+### 4. Database
+
+```bash
+createdb igpulse           # or point PG* at an existing instance
+```
+
+### 5. Verify before spending anything
+
+```bash
+python run.py validate          # config only — no network at all
+python run.py test-connection   # Apify auth + actor reachability + Postgres
+python run.py init-db           # apply schema, sync allowlist
+```
+
+`test-connection` costs nothing. `/users/me` and the actor metadata reads are
+not actor runs, so no compute units are consumed. It confirms four things: the
+token authenticates, all three configured actors resolve from your account,
+Postgres is reachable, and the schema is applied. Expected output:
+
+```
+Apify
+  token          : apify_api…9f2c
+  authenticated  : yes (username: yourname)
+  plan           : PERSONAL
+  actor apify~instagram-scraper                  reachable
+  actor apify~instagram-comment-scraper          reachable
+  actor easyapi~text-sentiment-analysis          reachable
+
+Postgres
+  connected      : yes (igpulse)
+  server         : PostgreSQL 16.2
+  schema applied : yes
+
+All checks passed. Safe to run `python run.py pipeline`.
+```
+
+A `NOT FOUND` on an actor usually means it was renamed or unpublished in the
+store — change the ID in `settings.yaml` rather than editing code.
+
+### 6. Fill in your targets
+
+`config/narratives.yaml` and `config/public_figures.yaml` ship empty on
+purpose. Add your issues and allowlist, then re-run `validate`.
+
+### Cost control before the first real run
+
+Apify bills per result. The Instagram Scraper is around **$1.50 per 1,000
+results** and the sentiment actor around **$2.99 per 1,000**, so a careless
+first run gets expensive fast. Before running `pipeline` in anger:
+
+- Set `ingest.narrative.results_per_term` to something small (25) and
+  `comments_per_post` to 10 for a first pass.
+- Run one lens alone: `python run.py ingest --lens narrative`.
+- Check actual consumption in the Apify console, then scale the numbers up.
+
+`validate` prints how many search terms are configured — multiply that by
+`results_per_term` for a rough upper bound on results per run.
 
 ## Running
 

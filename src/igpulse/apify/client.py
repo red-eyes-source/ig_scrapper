@@ -187,6 +187,31 @@ class ApifyClient:
             f"{method} {path} failed after {retry.max_attempts} attempts"
         ) from last_exc
 
+    # -- account / connectivity ------------------------------------------- #
+    def whoami(self) -> dict[str, Any]:
+        """Verify the token and return account details.
+
+        This is the cheapest possible authenticated call — no actor starts, no
+        compute units consumed. Used by `run.py test-connection` so a bad token
+        surfaces before a run rather than twenty minutes into one.
+        """
+        return self._request("GET", "/users/me").json()["data"]
+
+    def actor_exists(self, actor_id: str) -> bool:
+        """Check that an actor ID resolves and is visible to this account.
+
+        A renamed or unpublished store actor is a common and confusing failure:
+        the run starts, then dies on a 404 that reads like a network problem.
+        """
+        try:
+            self._request("GET", f"/acts/{actor_id}")
+        except (ApifyError, httpx.HTTPStatusError):
+            # _request raises HTTPStatusError for a 404 (not a retryable
+            # status) and ApifyError once retries are exhausted. Both mean
+            # "this actor is not usable from this account".
+            return False
+        return True
+
     # -- runs ------------------------------------------------------------- #
     def start_run(self, actor_id: str, run_input: dict[str, Any]) -> ActorRun:
         """Start an actor run asynchronously and return immediately."""

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ig-pulse CLI.
 
+    python run.py test-connection
     python run.py init-db
     python run.py ingest --lens all
     python run.py analyze --run-id 42
@@ -80,6 +81,81 @@ def cmd_validate(cfg: AppConfig, _args: argparse.Namespace) -> int:
     if not figures:
         print("WARNING: allowlist is empty — the public-figure and own-side "
               "lenses will collect nothing.", file=sys.stderr)
+    return 0
+
+
+def cmd_test_connection(cfg: AppConfig, _args: argparse.Namespace) -> int:
+    """Verify Apify and Postgres connectivity without starting an actor.
+
+    Costs nothing: /users/me and /acts/{id} are metadata reads, not runs. Run
+    this after setting credentials and before the first real ingest.
+    """
+    failures = 0
+
+    print("Apify")
+    token = os.environ.get("APIFY_TOKEN", "").strip()
+    if not token:
+        print("  token          : MISSING — set APIFY_TOKEN in .env")
+        failures += 1
+    else:
+        masked = f"{token[:9]}…{token[-4:]}" if len(token) > 16 else "…"
+        print(f"  token          : {masked}")
+        try:
+            with ApifyClient(token, cfg.settings.apify) as client:
+                user = client.whoami()
+                print(f"  authenticated  : yes (username: "
+                      f"{user.get('username', 'unknown')})")
+                plan = user.get("plan") or {}
+                if isinstance(plan, dict) and plan.get("id"):
+                    print(f"  plan           : {plan['id']}")
+
+                actors = [
+                    cfg.settings.apify.actors.instagram_scraper,
+                    cfg.settings.apify.actors.instagram_comment_scraper,
+                    cfg.settings.sentiment.actor_id,
+                ]
+                for actor_id in actors:
+                    ok = client.actor_exists(actor_id)
+                    print(f"  actor {actor_id:<38} "
+                          f"{'reachable' if ok else 'NOT FOUND'}")
+                    if not ok:
+                        failures += 1
+        except Exception as exc:  # noqa: BLE001 - surface the reason verbatim
+            print(f"  authenticated  : NO — {exc}")
+            failures += 1
+
+    print("\nPostgres")
+    # Direct connection with a short timeout rather than the pool: the pool
+    # retries for 30s and logs a warning per attempt, which is right for a
+    # long-running ingest and wrong for a diagnostic that should fail fast.
+    try:
+        import psycopg
+
+        with psycopg.connect("", connect_timeout=5) as conn:
+            db_name, version = conn.execute(
+                "SELECT current_database(), version()"
+            ).fetchone()
+            print(f"  connected      : yes ({db_name})")
+            print(f"  server         : {version.split(',')[0]}")
+            (applied,) = conn.execute(
+                "SELECT to_regclass('public.public_figure') IS NOT NULL"
+            ).fetchone()
+            print(f"  schema applied : "
+                  f"{'yes' if applied else 'no — run init-db'}")
+            if not applied:
+                failures += 1
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc).strip().splitlines()[0]
+        print(f"  connected      : NO — {detail}")
+        print("  hint           : check PGHOST/PGPORT/PGDATABASE/PGUSER/"
+              "PGPASSWORD in .env")
+        failures += 1
+
+    print()
+    if failures:
+        print(f"{failures} check(s) failed.", file=sys.stderr)
+        return 1
+    print("All checks passed. Safe to run `python run.py pipeline`.")
     return 0
 
 
@@ -227,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("validate").set_defaults(func=cmd_validate)
+    sub.add_parser("test-connection").set_defaults(func=cmd_test_connection)
     sub.add_parser("init-db").set_defaults(func=cmd_init_db)
     sub.add_parser("purge").set_defaults(func=cmd_purge)
 
