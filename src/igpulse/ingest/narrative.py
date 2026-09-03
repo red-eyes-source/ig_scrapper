@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from igpulse.apify.actors import (
     build_comment_input,
-    build_hashtag_search_input,
+    build_hashtag_input,
     normalise_comment,
     normalise_post,
 )
@@ -56,8 +56,8 @@ def collect_narratives(
             for term in narrative.search_terms:
                 run, items = client.run_and_collect(
                     actor,
-                    build_hashtag_search_input(
-                        [term],
+                    build_hashtag_input(
+                        term,
                         results_limit=ingest_cfg.results_per_term,
                         lookback=ingest_cfg.lookback,
                     ),
@@ -67,11 +67,23 @@ def collect_narratives(
 
                 post_ids: dict[str, int] = {}
                 post_urls: list[str] = []
+                # (engagement, post_id, handle) for the attribution shortlist.
+                citable: list[tuple[int, int, str]] = []
+                dropped = 0
+                filtered_out = 0
 
                 with db.connection() as conn, conn.transaction():
                     for record in items:
                         post = normalise_post(record)
                         if post is None:
+                            dropped += 1
+                            continue
+                        # Keyword terms narrow what the hashtag collected. A
+                        # narrative with no terms keeps everything.
+                        if narrative.terms and not narrative.matches_terms(
+                            post.caption
+                        ):
+                            filtered_out += 1
                             continue
                         if post.missing_fields:
                             logger.debug(
@@ -99,6 +111,24 @@ def collect_narratives(
                             post_ids[post.shortcode] = post_id
                             post_urls.append(post.url)
                             total_posts += 1
+                            if post.author_handle:
+                                citable.append((
+                                    (post.like_count or 0)
+                                    + (post.comment_count or 0),
+                                    post_id,
+                                    policy.normalise(post.author_handle),
+                                ))
+
+                # Attribution: only the highest-engagement posts, which are the
+                # ones a report can actually quote. Everything else keeps its
+                # pseudonym and nothing at all is attributed for comments.
+                top_n = cfg.settings.privacy.attribution_top_n_per_narrative
+                if top_n and citable:
+                    citable.sort(key=lambda row: row[0], reverse=True)
+                    db.record_attribution(
+                        [(run_id, pid, handle)
+                         for _, pid, handle in citable[:top_n]]
+                    )
 
                 if ingest_cfg.comments_per_post and post_urls:
                     total_comments += _collect_comments(
@@ -110,9 +140,27 @@ def collect_narratives(
                         actor_run_ids=actor_run_ids,
                     )
 
+                if items and not post_ids:
+                    sample_keys = sorted(items[0])[:12] if items else []
+                    logger.warning(
+                        "term %s: actor returned %d record(s) but none were "
+                        "stored (%d unparseable, %d filtered out by terms). "
+                        "First record keys: %s. Inspect the raw output with: "
+                        "python run.py debug-dataset --actor-run-id %s",
+                        term, len(items), dropped, filtered_out,
+                        sample_keys, run.run_id,
+                    )
+                elif not items:
+                    logger.warning(
+                        "term %s: actor returned no records at all. The tag "
+                        "may not exist, or the lookback window (%s) may be "
+                        "too short.", term, ingest_cfg.lookback,
+                    )
+
                 logger.info(
-                    "narrative %s / term %s: %d posts so far",
-                    narrative.key, term, total_posts,
+                    "narrative %s / term %s: %d posts so far (%d unparseable, "
+                    "%d filtered)",
+                    narrative.key, term, total_posts, dropped, filtered_out,
                 )
 
     except Exception as exc:
@@ -183,4 +231,19 @@ def _collect_comments(
                 like_count=comment.like_count,
             ) is not None:
                 inserted += 1
+
+    if items and not inserted:
+        logger.warning(
+            "comment actor returned %d record(s) but none were stored. This is "
+            "usually a post-shortcode mismatch: the comment records did not "
+            "carry a field naming their parent post. First record keys: %s. "
+            "Inspect with: python run.py debug-dataset --actor-run-id %s",
+            len(items), sorted(items[0])[:12], run.run_id,
+        )
+    elif not items:
+        logger.warning(
+            "comment actor returned nothing for %d post URL(s). The posts may "
+            "have comments disabled, or the free tier's comment cap applies.",
+            len(post_urls),
+        )
     return inserted

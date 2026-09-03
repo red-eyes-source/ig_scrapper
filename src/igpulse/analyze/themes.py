@@ -36,6 +36,11 @@ _BASE_STOPWORDS = {
     "hai", "hain", "nahi", "kya", "aur", "yeh", "woh", "toh", "bhi", "hoga",
     "karo", "kare", "karta", "liye", "wala", "wale", "mein", "par", "koi",
     "https", "http", "www", "com",
+    # Caption filler that survives frequency ranking on small corpora.
+    "where", "which", "while", "after", "before", "today", "new", "now",
+    "check", "watch", "see", "know", "want", "need", "make", "made", "take",
+    "day", "time", "year", "via", "amp", "dm", "click", "share", "comment",
+    "tag", "post", "video", "photo", "subscribe", "channel",
 }
 
 _TOKEN_RE = re.compile(r"[a-z0-9#@']+")
@@ -57,10 +62,15 @@ def _tokenise(text: str, stopwords: set[str]) -> list[str]:
     # specifically because a frequently-tagged account would otherwise surface
     # as a "theme", turning issue analysis back into person tracking.
     cleaned = _MENTION_RE.sub(" ", _URL_RE.sub(" ", text.lower()))
-    return [
-        t for t in _TOKEN_RE.findall(cleaned)
-        if len(t) > 2 and t not in stopwords and not t.isdigit()
-    ]
+    out: list[str] = []
+    for token in _TOKEN_RE.findall(cleaned):
+        # Normalise "#msp" to "msp" so a caption hashtag matches the configured
+        # search tag and can be excluded; otherwise the search term reappears
+        # as its own top theme.
+        bare = token.lstrip("#'")
+        if len(bare) > 2 and bare not in stopwords and not bare.isdigit():
+            out.append(bare)
+    return out
 
 
 def _ngrams(tokens: list[str], lo: int, hi: int) -> list[str]:
@@ -75,12 +85,32 @@ def _ngrams(tokens: list[str], lo: int, hi: int) -> list[str]:
     return out
 
 
+def _is_degenerate(gram: str) -> bool:
+    """Reject n-grams that carry no information.
+
+    A repeated token ("iti iti") is a caption artefact — hashtag spam, a
+    stutter, a line break collapsed into a space — not a phrase. It ranks well
+    on small corpora precisely because it is repetitive, which is the opposite
+    of what frequency ranking is supposed to surface.
+    """
+    parts = gram.split()
+    return len(parts) > 1 and len(set(parts)) == 1
+
+
 def extract_themes(
     cfg: AppConfig, db: Database, *, run_id: int
 ) -> list[ThemeTerm]:
     tcfg = cfg.settings.analysis.themes
     stopwords = _BASE_STOPWORDS | {w.lower() for w in tcfg.stopword_extra}
     lo, hi = tcfg.ngram_range
+
+    # A narrative's own search hashtags cannot be findings about it — every
+    # post was collected *because* it carried one. Left in, they top the
+    # ranking of every narrative and say nothing.
+    search_tags: dict[str, set[str]] = {
+        n.key: {t.lower() for t in n.hashtags} for n in cfg.narratives.narratives
+    }
+    all_search_tags = {t for tags in search_tags.values() for t in tags}
 
     rows = db.fetch(
         """
@@ -104,10 +134,18 @@ def extract_themes(
 
     for row in rows:
         key = row["narrative_key"]
-        tokens = _tokenise(row["body"], stopwords)
+        # Exclude this narrative's own tags, plus every other narrative's, so a
+        # shared tag does not become a spurious cross-narrative theme.
+        excluded = stopwords | all_search_tags | search_tags.get(key, set())
+        tokens = _tokenise(row["body"], excluded)
         if not tokens:
             continue
-        grams = _ngrams(tokens, lo, hi)
+        grams = [
+            g for g in _ngrams(tokens, lo, hi)
+            if not _is_degenerate(g) and g not in excluded
+        ]
+        if not grams:
+            continue
         per_narrative[key].update(grams)
         # doc_frequency counts documents, not occurrences
         doc_counts[key].update(set(grams))

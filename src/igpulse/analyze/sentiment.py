@@ -119,9 +119,17 @@ def score_run(
                 # the response from the request. Refusing to guess is correct:
                 # mis-aligned sentiment is worse than absent sentiment.
                 logger.error(
-                    "sentiment actor returned %d results for %d inputs on %s; "
-                    "skipping this batch to avoid misaligned scores",
-                    len(items), len(batch), table,
+                    "sentiment actor %s returned %d result(s) for %d input "
+                    "texts on %s. Skipping the batch rather than assigning "
+                    "scores to the wrong rows.\n"
+                    "  This is the newline-batching assumption failing: the "
+                    "actor is treating the whole batch as ONE document instead "
+                    "of one result per line.\n"
+                    "  Fix by setting sentiment.batch_size to 1 in "
+                    "settings.yaml (correct, but one actor run per row - "
+                    "slow and expensive), or switch sentiment.actor_id to an "
+                    "actor that accepts an array of texts.",
+                    scfg.actor_id, len(items), len(batch), table,
                 )
                 continue
 
@@ -156,6 +164,15 @@ def score_run(
 
             db.upsert_sentiment(rows)
 
+    if summary.scored == 0 and summary.uncertain == 0:
+        logger.warning(
+            "sentiment scored nothing at all for run %d. Either no rows had "
+            "text of at least %d characters, or every batch was skipped - "
+            "check the errors above. Reports will show 0%% coverage and 'n/a' "
+            "for every sentiment figure, which is correct: unknown, not "
+            "neutral.",
+            run_id, scfg.min_chars,
+        )
     logger.info(
         "sentiment: %d scored, %d uncertain (%.1f%% coverage)",
         summary.scored, summary.uncertain, summary.coverage * 100,

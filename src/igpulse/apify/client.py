@@ -39,6 +39,25 @@ class ApifyError(RuntimeError):
     """Base for Apify client failures."""
 
 
+# Real tokens are `apify_api_` plus ~36 random alphanumerics. The shipped
+# .env.example uses a run of x's, and every other placeholder convention below
+# shows up in copied config too. Catching these is worth a few lines: an
+# unfilled placeholder otherwise produces a 401, which sends you looking for a
+# revoked or wrong-account token instead of an unedited .env.
+_PLACEHOLDER_MARKERS = ("xxxx", "your_", "yourtoken", "<", "changeme",
+                        "change-me", "replace", "placeholder", "example")
+
+
+def looks_like_placeholder(token: str) -> bool:
+    lowered = token.strip().lower()
+    if not lowered:
+        return True
+    if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+        return True
+    # A real token is comfortably longer than its prefix.
+    return len(lowered) < 20
+
+
 class ApifyRunFailed(ApifyError):
     def __init__(self, run_id: str, status: str, detail: str | None = None) -> None:
         super().__init__(f"actor run {run_id} ended in state {status}: {detail or '-'}")
@@ -97,9 +116,12 @@ class _TokenBucket:
 
 class ApifyClient:
     def __init__(self, token: str, cfg: ApifyCfg) -> None:
-        if not token:
+        if looks_like_placeholder(token):
             raise ValueError(
-                "APIFY_TOKEN is empty. Set it in .env or the environment."
+                "APIFY_TOKEN is unset or still holds the placeholder value "
+                "from .env.example. Get a real token from the Apify console: "
+                "Settings -> API & Integrations -> Personal API token, then "
+                "put it in .env as APIFY_TOKEN=apify_api_..."
             )
         self._cfg = cfg
         self._bucket = _TokenBucket(

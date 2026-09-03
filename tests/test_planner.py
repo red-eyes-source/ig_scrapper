@@ -31,7 +31,7 @@ def _cfg(*, terms_per_narrative: int = 2, narratives: int = 3,
                 Narrative(
                     key=f"n{i}",
                     label=f"Narrative {i}",
-                    hashtags=[f"#t{i}x{j}" for j in range(terms_per_narrative)],
+                    hashtags=[f"t{i}x{j}" for j in range(terms_per_narrative)],
                 )
                 for i in range(narratives)
             ]

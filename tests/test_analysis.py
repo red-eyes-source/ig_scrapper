@@ -8,7 +8,7 @@ from igpulse.analyze.metrics import SentimentMix
 from igpulse.analyze.themes import _ngrams, _tokenise
 from igpulse.apify.actors import (
     _parse_timestamp,
-    build_hashtag_search_input,
+    build_hashtag_input,
     build_sentiment_input,
     normalise_post,
 )
@@ -87,26 +87,52 @@ def test_owner_nested_username_is_found():
 
 
 # -- actor inputs ----------------------------------------------------------- #
-def test_hashtag_input_sets_search_type_from_prefix():
-    tag = build_hashtag_search_input(["#msp"], results_limit=50, lookback="7 days")
-    assert tag["searchType"] == "hashtag"
-    user = build_hashtag_search_input(["msp"], results_limit=50, lookback="7 days")
-    assert user["searchType"] == "user"
+def test_hashtag_input_uses_explore_tags_url_not_search():
+    """Regression: `search` + searchType=hashtag is hashtag DISCOVERY.
+
+    It returns one entity record (name, postsCount, related tags) and no posts
+    at all, so a run reports "returned 1 items" and stores nothing. Post
+    collection has to go through the explore/tags URL.
+    """
+    built = build_hashtag_input("msp", results_limit=50, lookback="7 days")
+    assert built["directUrls"] == [
+        "https://www.instagram.com/explore/tags/msp/"
+    ]
+    assert built["resultsType"] == "posts"
+    assert "search" not in built
+    assert "searchType" not in built
 
 
-def test_search_limit_is_clamped_to_actor_maximum():
-    built = build_hashtag_search_input(
-        ["#x"], results_limit=1000, lookback="7 days"
-    )
-    assert built["searchLimit"] == 250
+def test_hash_prefix_is_stripped_and_case_normalised():
+    """Instagram tag URLs take the bare token: /explore/tags/msp/, not /%23MSP/."""
+    for variant in ("#MSP", "MSP", "  #msp  "):
+        built = build_hashtag_input(variant, results_limit=10, lookback="1 day")
+        assert built["directUrls"] == [
+            "https://www.instagram.com/explore/tags/msp/"
+        ]
+
+
+def test_results_limit_and_lookback_are_passed_through():
+    built = build_hashtag_input("x", results_limit=1000, lookback="3 days")
     assert built["resultsLimit"] == 1000
+    assert built["onlyPostsNewerThan"] == "3 days"
 
 
-def test_multiple_terms_rejected_because_actor_takes_one_search_value():
+def test_multi_word_hashtag_rejected():
+    """A space means it is a caption phrase, not a tag — fail loudly rather
+    than building a URL that returns nothing."""
+    import pytest
+
+    with pytest.raises(ValueError, match="space"):
+        build_hashtag_input("minimum support price", results_limit=10,
+                            lookback="1 day")
+
+
+def test_empty_hashtag_rejected():
     import pytest
 
     with pytest.raises(ValueError):
-        build_hashtag_search_input(["#a", "#b"], results_limit=10, lookback="1 day")
+        build_hashtag_input("#", results_limit=10, lookback="1 day")
 
 
 def test_sentiment_input_collapses_newlines_to_keep_batches_aligned():

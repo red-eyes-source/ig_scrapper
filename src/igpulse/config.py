@@ -161,6 +161,21 @@ class PrivacyCfg(BaseModel):
     narrative_retention_days: int = Field(gt=0)
     store_narrative_text: bool
     max_public_figures: int = Field(gt=0)
+    # Handles are stored for at most this many posts per narrative per run, so
+    # quoted posts can be attributed. Capped at 50: past that it stops being
+    # citation and starts being a named corpus.
+    attribution_top_n_per_narrative: int = Field(ge=0, le=50)
+    attribution_retention_days: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _attribution_expires_first(self) -> "PrivacyCfg":
+        if self.attribution_retention_days > self.narrative_retention_days:
+            raise ValueError(
+                "attribution_retention_days must not exceed "
+                "narrative_retention_days — names should not outlive the "
+                "aggregate data they annotate"
+            )
+        return self
 
 
 class ThemesCfg(BaseModel):
@@ -197,6 +212,15 @@ class AnalysisCfg(BaseModel):
     metrics: MetricsCfg
 
 
+class JsonCfg(BaseModel):
+    include_posts: bool
+    include_comments: bool
+    include_themes: bool
+    max_posts_per_narrative: int = Field(ge=0)
+    caption_max_chars: int = Field(ge=0)
+    indent: int = Field(ge=0, le=8)
+
+
 class DocxCfg(BaseModel):
     template: str | None
     include_sections: list[str]
@@ -208,9 +232,26 @@ class HtmlCfg(BaseModel):
 
 
 class ReportCfg(BaseModel):
+    model_config = {"populate_by_name": True}
+
     output_dir: str
+    formats: list[Literal["json", "html", "docx"]]
+    # Aliased: the YAML key is `json`, but a field literally named `json`
+    # shadows BaseModel.json and emits a warning on every import.
+    json_options: JsonCfg = Field(alias="json")
     docx: DocxCfg
     html: HtmlCfg
+
+    @model_validator(mode="after")
+    def _at_least_one_format(self) -> "ReportCfg":
+        if not self.formats:
+            raise ValueError(
+                "report.formats is empty — a run would analyse everything and "
+                "write nothing. Pick at least one of json, html, docx."
+            )
+        if len(set(self.formats)) != len(self.formats):
+            raise ValueError(f"duplicate entries in report.formats: {self.formats}")
+        return self
 
 
 class DatabaseCfg(BaseModel):
@@ -317,27 +358,59 @@ class Narrative(BaseModel):
 
     @field_validator("hashtags")
     @classmethod
-    def _hash_prefixed(cls, v: list[str]) -> list[str]:
-        out = []
+    def _bare_tags(cls, v: list[str]) -> list[str]:
+        """Store hashtags as bare lowercase tokens, no leading '#'.
+
+        That is the form Instagram's tag URL takes
+        (/explore/tags/<tag>/), so keeping it canonical here means the URL
+        builder never has to guess. Accepts either form in YAML.
+        """
+        out: list[str] = []
         for tag in v:
-            t = tag.strip()
+            t = tag.strip().lstrip("#").strip().lower()
             if not t:
                 continue
-            out.append(t if t.startswith("#") else f"#{t}")
+            if " " in t:
+                raise ValueError(
+                    f"hashtag {tag!r} contains a space. Instagram tags are "
+                    f"single tokens — put multi-word phrases in `terms`, "
+                    f"which filter captions instead."
+                )
+            out.append(t)
         return out
 
     @model_validator(mode="after")
-    def _has_targets(self) -> "Narrative":
-        if not self.hashtags and not self.terms:
+    def _has_collectable_targets(self) -> "Narrative":
+        # Hashtags are the only thing that can COLLECT posts. Instagram has no
+        # public caption keyword search, so a narrative defined purely by terms
+        # would run, cost money, and return nothing.
+        if not self.hashtags:
             raise ValueError(
-                f"narrative {self.key!r} has neither hashtags nor terms"
+                f"narrative {self.key!r} has no hashtags. Instagram has no "
+                f"caption keyword search, so hashtags are the only way to "
+                f"collect posts; `terms` are applied as caption filters to "
+                f"what the hashtags return. Add at least one hashtag."
             )
         return self
 
     @property
     def search_terms(self) -> list[str]:
-        """Terms passed to the Apify scraper, hashtags first."""
-        return [*self.hashtags, *self.terms]
+        """Collection inputs. One Apify run is issued per entry."""
+        return list(self.hashtags)
+
+    def matches_terms(self, caption: str | None) -> list[str]:
+        """Which of this narrative's keyword terms appear in a caption.
+
+        Terms narrow and label what the hashtags collected; they never trigger
+        their own actor run. An empty `terms` list matches everything, so a
+        hashtag-only narrative keeps all its posts.
+        """
+        if not self.terms:
+            return []
+        if not caption:
+            return []
+        lowered = caption.lower()
+        return [t for t in self.terms if t.lower() in lowered]
 
 
 class NarrativeList(BaseModel):

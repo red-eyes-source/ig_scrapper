@@ -18,6 +18,8 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 
@@ -71,6 +73,23 @@ def _add_table(
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
 
+    # `table.autofit = False` alone is not enough — python-docx sets the
+    # property but does not emit <w:tblLayout>, so Word and LibreOffice keep
+    # auto-sizing and ignore the per-cell widths, breaking headings mid-word
+    # ("infrastructur / e"). Writing the element explicitly makes the widths
+    # authoritative.
+    tbl_pr = table._tbl.tblPr
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tbl_pr.append(layout)
+
+    # And the tblGrid too. add_table() writes a grid of equal <w:gridCol>
+    # widths, which LibreOffice honours over per-cell widths — so without this
+    # every table renders as equal columns no matter what the cells say. All
+    # three (tblLayout, gridCol, cell width) have to agree.
+    for idx, column in enumerate(table.columns):
+        column.width = widths[idx]
+
     for idx, header in enumerate(headers):
         cell = table.rows[0].cells[idx]
         cell.width = widths[idx]
@@ -101,6 +120,9 @@ def build_report(
     themes: list[ThemeTerm],
     sentiment: SentimentSummary,
     generated_at: datetime,
+    samples: dict[str, list[dict]] | None = None,
+    provenance: dict | None = None,
+    window: dict | None = None,
     output_path: Path | None = None,
 ) -> Path:
     out_dir = Path(cfg.settings.report.output_dir)
@@ -161,6 +183,39 @@ def build_report(
             "the lookback window covers recent activity."
         )
 
+    # -- what was searched ------------------------------------------------ #
+    if "narrative" in sections and cfg.narratives.narratives:
+        doc.add_heading("What was searched", level=1)
+        doc.add_paragraph(
+            "Collection is by hashtag; Instagram has no public caption "
+            "keyword search, so keyword terms filter what the hashtags return "
+            "rather than searching independently. A low post count means "
+            "either low discourse or a poorly-chosen tag, and these "
+            "definitions are how you tell the difference."
+        )
+        ncfg = cfg.settings.ingest.narrative
+        _add_table(
+            doc,
+            ["Narrative", "Hashtags collected", "Caption filters", "Lookback"],
+            [
+                [
+                    n.label,
+                    ", ".join(f"#{t}" for t in n.hashtags),
+                    ", ".join(n.terms) if n.terms else "none - all posts kept",
+                    ncfg.lookback,
+                ]
+                for n in cfg.narratives.narratives
+            ],
+            weights=[2.2, 2.4, 2.6, 1.0],
+        )
+        if window:
+            doc.add_paragraph(
+                f"Posts actually collected span "
+                f"{window['oldest']:%d %B %Y} to {window['newest']:%d %B %Y}. "
+                f"A span shorter than the configured lookback means the tag "
+                f"had no older activity, not that collection failed."
+            )
+
     # -- narrative section ------------------------------------------------ #
     if "narrative" in sections and narratives:
         doc.add_heading("Narrative landscape", level=1)
@@ -185,7 +240,7 @@ def build_report(
                 ]
                 for n in narratives
             ],
-            weights=[4.4, 1.0, 1.2, 1.3, 1.0, 1.1, 1.2],
+            weights=[3.8, 0.9, 1.4, 1.3, 1.0, 1.1, 1.3],
         )
 
         if themes:
@@ -198,6 +253,40 @@ def build_report(
                 para = doc.add_paragraph()
                 para.add_run(f"{label_of.get(key, key)}: ").bold = True
                 para.add_run(", ".join(t.term for t in terms[:12]))
+
+    # -- evidence ---------------------------------------------------------- #
+    if samples and "narrative" in sections:
+        doc.add_heading("Sample posts", level=1)
+        doc.add_paragraph(
+            "Highest-engagement posts per narrative, so the figures above can "
+            "be checked against what was actually collected. Quoted posts are "
+            "attributed so a citation can be verified; the wider corpus of "
+            "authors and every commenter stays pseudonymous."
+        )
+        label_of = {n.narrative_key: n.label for n in narratives}
+        for key, posts in samples.items():
+            doc.add_heading(label_of.get(key, key), level=2)
+            for post in posts:
+                meta = doc.add_paragraph()
+                handle = post.get("author_handle")
+                run_meta = meta.add_run(
+                    (f"@{handle} - " if handle else "")
+                    + f"{post['posted_at']:%d %b %Y, %H:%M} - "
+                    f"{post['like_count'] or 0:,} likes, "
+                    f"{post['comment_count'] or 0:,} comments - "
+                    f"{post['url']}"
+                )
+                run_meta.font.size = Pt(9)
+                run_meta.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+                meta.paragraph_format.space_after = Pt(2)
+
+                caption = (post.get("caption") or "").strip()
+                excerpt = (caption[:400] + "...") if len(caption) > 400 else caption
+                body_para = doc.add_paragraph(excerpt or "(no caption)")
+                body_para.paragraph_format.space_after = Pt(10)
+                body_para.paragraph_format.left_indent = Inches(0.25)
+                for run_b in body_para.runs:
+                    run_b.font.size = Pt(10)
 
     # -- public figure section -------------------------------------------- #
     if "public_figure" in sections:
@@ -274,7 +363,17 @@ def build_report(
     if "methodology" in sections:
         doc.add_heading("Methodology and limitations", level=1)
         coverage = sentiment.coverage * 100
-        for line in [
+        provenance_lines = []
+        if provenance:
+            provenance_lines = [
+                f"Provenance: ingest run #{provenance['id']} "
+                f"({provenance['status']}), started "
+                f"{provenance['started_at']:%d %B %Y %H:%M} UTC. Config "
+                f"fingerprint {provenance['config_fingerprint']}; two runs are "
+                f"comparable only if these match. Apify run IDs: "
+                f"{', '.join(provenance['actor_run_ids']) or 'none'}.",
+            ]
+        for line in provenance_lines + [
             f"Collection: Apify actors "
             f"{cfg.settings.apify.actors.instagram_scraper} and "
             f"{cfg.settings.apify.actors.instagram_comment_scraper}. "

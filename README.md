@@ -10,7 +10,49 @@ three lenses, one report.
 - **Own-side lens** — how the client's own accounts perform against both.
 
 Collection runs on Apify. Sentiment runs on Apify. Storage is Postgres. Output
-is a Word report plus a self-contained HTML dashboard.
+is a JSON dataset plus a self-contained HTML dashboard; a Word report is
+available by adding `docx` to `report.formats`.
+
+## Control dashboard
+
+```bash
+python run.py dashboard
+```
+
+Opens a local editor on 127.0.0.1:8765 for all three config files: narratives
+(hashtags and caption filters), the public-figure allowlist, and every tunable
+parameter. A live cost estimate reruns the planner as you type, so raising
+`results_per_term` shows its dollar effect before you save, not after you run.
+
+Saves are validated through the same Pydantic models the pipeline uses — an
+invalid edit is rejected with the reason and never reaches disk — written
+atomically, and the previous version is kept under `config/.backups/`.
+
+Loopback only, and deliberately not configurable: there is no authentication,
+and what the page edits is what the pipeline collects and who it names.
+
+## Output formats
+
+`report.formats` in `settings.yaml` decides what a run writes. Default is
+`["json", "html"]`.
+
+**JSON** is the full dataset, not a summary: every post with its likes,
+comments, engagement and sentiment; every comment nested under its post; the
+hashtags that collected each narrative and their tag URLs; themes with
+frequencies; and the aggregate metrics. Every published figure can be recomputed
+from the raw rows in the same file, so a client can check the numbers instead of
+trusting them. `schema_version` is pinned so downstream code can rely on the
+shape.
+
+The privacy invariant holds in the export as it does in the database: narrative
+authors are per-run pseudonyms and no handle field exists to serialise. Only
+allowlisted public figures are named, and each carries the written justification
+that put them on the list.
+
+Size control lives under `report.json`: `include_posts`, `include_comments`,
+`include_themes`, `max_posts_per_narrative`, `caption_max_chars`. Prefer capping
+post counts over truncating captions — a clipped caption silently corrupts any
+downstream text analysis.
 
 ---
 
@@ -32,7 +74,16 @@ So identity resolution has exactly one chokepoint,
 | Author | Stored as | Tracked across runs |
 |---|---|---|
 | On the allowlist (`config/public_figures.yaml`) | Handle, named | Yes |
-| Everyone else | `HMAC(run_salt, handle)` | **No** |
+| Author of a quoted post (top N by engagement) | Handle, for citation | **No** — separate short retention |
+| Every other author, and every commenter | `HMAC(run_salt, handle)` | **No** |
+
+The middle row exists because a quoted post needs an attributable author or the
+citation cannot be checked. It is bounded on three axes: posts only (never
+comments), at most `attribution_top_n_per_narrative` per narrative per run
+(capped at 50 in the schema), and its own retention which must expire before
+the aggregate rows do. `post_attribution` has no index on handle and no
+per-handle aggregate — adding either turns a citation table into a profile
+store, and a test asserts neither appears.
 
 The run salt is 32 random bytes generated at run start, held in memory, never
 written anywhere. Within a run the pseudonym is stable, so dedupe and
@@ -63,10 +114,40 @@ Narrative rows are purged after `privacy.narrative_retention_days` (default
 
 ### 1. Install
 
+All command blocks in this README are comment-free so they can be pasted
+directly. Interactive zsh does not treat `#` as a comment by default, so a
+trailing explanation on a command line becomes an argument and breaks it.
+
+Requires **Python 3.11 or newer**. On macOS and most Linux distributions the
+command is `python3`, not `python` — plain `python` usually does not exist.
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
+python3 --version
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 ```
+
+Confirm the first line reports 3.11 or newer. On Windows the activate command
+is `.venv\Scripts\activate`.
+
+Inside an activated venv, `python` and `pip` are correct — that is what the
+venv is for. Outside one, use `python3` and `python3 -m pip`.
+
+**Activate the venv before installing.** If `python3 -m venv` fails and you run
+`pip install` anyway, the packages land in your system Python. That is what
+produces the "Requirement already satisfied" lines pointing at
+`/Library/Frameworks/...` instead of `.venv/`.
+
+Verify the install:
+
+```bash
+python -m pytest -q
+```
+
+Expect `92 passed` (or `111 passed` once a database is reachable — 19 integration
+tests skip automatically without one).
 
 ### 2. Get your Apify API token
 
@@ -107,17 +188,66 @@ environment, so both work side by side.
 
 ### 4. Database
 
+`createdb` ships with Postgres, so `command not found` means Postgres itself
+isn't installed. Pick one:
+
+**Docker** — cleanest, matches the `.env.example` defaults exactly, and is the
+same thing you'd deploy:
+
 ```bash
-createdb igpulse           # or point PG* at an existing instance
+docker run --name igpulse-pg -d -p 5432:5432 \
+  -e POSTGRES_USER=igpulse -e POSTGRES_PASSWORD=igpulse \
+  -e POSTGRES_DB=igpulse postgres:16
+```
+
+Then `.env` needs no edits beyond `PGPASSWORD=igpulse`. Restart later with
+`docker start igpulse-pg`.
+
+**Homebrew** — no Docker needed. Run these **one line at a time**;
+`brew install` asks a y/n question, and a pasted block feeds the next command
+into that prompt.
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+createuser -s igpulse
+createdb -O igpulse igpulse
+```
+
+Two things to know:
+
+- The formula is **keg-only**, so without that PATH line `createdb` stays
+  missing even after a successful install.
+- Homebrew creates a superuser named after **your macOS account**, not
+  `igpulse` or `postgres`. The `createuser`/`createdb` pair above adds the role
+  the shipped `.env.example` expects, so no `.env` edit is needed. Local
+  connections use trust auth, so `PGPASSWORD` is ignored — leave it as-is.
+
+Skipping `createuser` is what produces
+`FATAL: role "igpulse" does not exist`.
+
+**Postgres.app** — download from postgresapp.com, drag to Applications, click
+Initialize, then run the same `createuser`/`createdb` pair.
+
+Verify before moving on:
+
+```bash
+python run.py test-connection
 ```
 
 ### 5. Verify before spending anything
 
 ```bash
-python run.py validate          # config only — no network at all
-python run.py test-connection   # Apify auth + actor reachability + Postgres
-python run.py init-db           # apply schema, sync allowlist
+python run.py validate
+python run.py test-connection
+python run.py init-db
 ```
+
+- `validate` — config only, no network at all
+- `test-connection` — Apify auth, actor reachability, Postgres, schema state
+- `init-db` — apply schema, sync allowlist
 
 `test-connection` costs nothing. `/users/me` and the actor metadata reads are
 not actor runs, so no compute units are consumed. It confirms four things: the
@@ -147,7 +277,17 @@ store — change the ID in `settings.yaml` rather than editing code.
 ### 6. Fill in your targets
 
 `config/narratives.yaml` and `config/public_figures.yaml` ship empty on
-purpose. Add your issues and allowlist, then re-run `validate`.
+purpose. A starter set of issue-shaped narratives for Indian political
+discourse is in `config/examples/narratives.india-issues.yaml` — copy it and
+cut it down rather than running it whole; at default volumes the full file is
+roughly $2,100 per cycle.
+
+`validate` lists every search term it would use, and `plan` prices them:
+
+```bash
+python run.py validate
+python run.py plan
+```
 
 ### Cost control before the first real run
 
@@ -166,12 +306,15 @@ first run gets expensive fast. Before running `pipeline` in anger:
 ## Running
 
 ```bash
-python run.py pipeline                  # ingest -> analyse -> report -> purge
-python run.py ingest --lens narrative   # one lens at a time
+python run.py pipeline
+python run.py ingest --lens narrative
 python run.py analyze --run-id 42
 python run.py report  --run-id 42
-python run.py purge                     # apply retention window
+python run.py purge
 ```
+
+`pipeline` runs ingest, analyse, report and the retention purge in sequence.
+The rest let you run one stage at a time.
 
 `validate` is the cheap pre-flight. Run it after any config change — it catches
 malformed YAML, a duplicate handle, a thin justification, or an over-cap
@@ -206,7 +349,7 @@ src/igpulse/
   ingest/        narrative.py, figures.py (public_figure + own_side lenses)
   analyze/       sentiment.py, themes.py, metrics.py
   report/        docx_report.py, html_dashboard.py
-tests/           45 tests, no network or database required
+tests/           111 tests; 19 need Postgres, the rest need nothing
 run.py           CLI
 ```
 

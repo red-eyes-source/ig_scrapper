@@ -71,6 +71,20 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   margin-right: 5px; vertical-align: middle; }
 .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
 .terms { color: var(--muted); font-size: 13px; }
+.muted { color: var(--muted); }
+h3 { font-size: 14px; margin: 18px 0 8px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+.sample { border-left: 3px solid var(--line); padding: 8px 0 8px 14px;
+  margin-bottom: 14px; }
+.sample-meta { font-size: 12px; color: var(--muted); margin-bottom: 4px;
+  font-variant-numeric: tabular-nums; }
+.sample-meta a { color: var(--accent); text-decoration: none; }
+.sample-meta a:hover { text-decoration: underline; }
+.sample-body { font-size: 13.5px; white-space: pre-wrap; word-break: break-word; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em; background: var(--line); padding: 1px 4px; border-radius: 3px; }
 """
 
 
@@ -152,6 +166,9 @@ def build_dashboard(
     themes: list[ThemeTerm],
     sentiment: SentimentSummary,
     generated_at: datetime,
+    samples: dict[str, list[dict]] | None = None,
+    provenance: dict | None = None,
+    window: dict | None = None,
     output_path: Path | None = None,
 ) -> Path:
     out_dir = Path(cfg.settings.report.output_dir)
@@ -193,6 +210,37 @@ def build_dashboard(
         f'<span><i style="background:{_UNCERTAIN}"></i>Uncertain</span>'
         "</div>",
     ]
+
+    # What was actually searched. Without this the reader cannot tell whether a
+    # low count means low discourse or a badly-chosen tag.
+    if "narrative" in sections and cfg.narratives.narratives:
+        body.append("<h2>What was searched</h2><div class='panel'><table>")
+        body.append(
+            "<tr><th>Narrative</th><th>Hashtags collected</th>"
+            "<th>Caption filters</th><th class='num'>Lookback</th></tr>"
+        )
+        ncfg = cfg.settings.ingest.narrative
+        for n in cfg.narratives.narratives:
+            tags = " ".join(f"<span class='tag'>#{_esc(t)}</span>"
+                            for t in n.hashtags)
+            filters = (
+                ", ".join(_esc(t) for t in n.terms)
+                if n.terms else "<span class='muted'>none — all posts kept</span>"
+            )
+            body.append(
+                f"<tr><td>{_esc(n.label)}</td><td>{tags}</td>"
+                f"<td class='terms'>{filters}</td>"
+                f"<td class='num'>{_esc(ncfg.lookback)}</td></tr>"
+            )
+        body.append("</table>")
+        if window:
+            body.append(
+                f"<p class='note'>Posts actually collected span "
+                f"{window['oldest']:%d %b %Y} to {window['newest']:%d %b %Y}. "
+                f"A span shorter than the lookback means the tag had no older "
+                f"activity, not that collection failed.</p>"
+            )
+        body.append("</div>")
 
     if "narrative" in sections and narratives:
         body.append("<h2>Narrative volume</h2><div class='panel'>")
@@ -239,6 +287,45 @@ def build_dashboard(
                     f"{_esc(', '.join(t.term for t in terms[:14]))}</span></p>"
                 )
             body.append("</div>")
+
+    # Evidence. A report with no examples cannot be checked.
+    if samples and "narrative" in sections:
+        label_of = {n.narrative_key: n.label for n in narratives}
+        body.append("<h2>Sample posts</h2><div class='panel'>")
+        body.append(
+            "<p class='note'>Highest-engagement posts per narrative, so the "
+            "numbers above can be checked against what was actually collected. "
+            "Quoted posts are attributed so a citation can be verified; the "
+            "wider corpus of authors and every commenter stays pseudonymous "
+            "and is not tracked between runs.</p>"
+        )
+        for key, posts in samples.items():
+            body.append(f"<h3>{_esc(label_of.get(key, key))}</h3>")
+            for post in posts:
+                caption = (post.get("caption") or "").strip()
+                excerpt = (caption[:280] + "…") if len(caption) > 280 else caption
+                body.append(
+                    "<div class='sample'>"
+                    f"<div class='sample-meta'>"
+                    + (
+                        f"<a href=\"https://www.instagram.com/"
+                        f"{_esc(post['author_handle'])}/\" target=\"_blank\" "
+                        f"rel=\"noopener noreferrer\">"
+                        f"@{_esc(post['author_handle'])}</a> &middot; "
+                        if post.get("author_handle") else ""
+                    ) +
+                    f"{post['posted_at']:%d %b %Y, %H:%M} &middot; "
+                    f"{post['like_count'] or 0:,} likes &middot; "
+                    f"{post['comment_count'] or 0:,} comments"
+                    f"{' &middot; video' if post.get('is_video') else ''}"
+                    f" &middot; <a href=\"{_esc(post['url'])}\" "
+                    f"target=\"_blank\" rel=\"noopener noreferrer\">"
+                    f"{_esc(post['post_shortcode'])}</a></div>"
+                    f"<div class='sample-body'>"
+                    f"{_esc(excerpt) or '<em>no caption</em>'}</div>"
+                    "</div>"
+                )
+        body.append("</div>")
 
     if "public_figure" in sections:
         tracked = [f for f in figures if f.category != "own_side"]
@@ -294,6 +381,23 @@ def build_dashboard(
                     f"<td>{_sentiment_bar(f.audience_sentiment)}</td></tr>"
                 )
             body.append("</table></div>")
+
+    if provenance:
+        body.append("<h2>Provenance</h2><div class='panel'><table>")
+        body.append(
+            f"<tr><th>Run</th><td class='mono'>#{provenance['id']} "
+            f"({_esc(provenance['status'])})</td></tr>"
+            f"<tr><th>Collected</th><td>"
+            f"{provenance['started_at']:%d %b %Y, %H:%M} UTC</td></tr>"
+            f"<tr><th>Config fingerprint</th>"
+            f"<td class='mono'>{_esc(provenance['config_fingerprint'])}</td></tr>"
+            f"<tr><th>Apify runs</th><td class='mono'>"
+            f"{_esc(', '.join(provenance['actor_run_ids']) or 'none')}</td></tr>"
+        )
+        body.append("</table><p class='note'>Two runs are comparable only if "
+                    "their config fingerprints match. Apify run IDs can be "
+                    "opened in the console, or inspected with "
+                    "<code>run.py debug-dataset</code>.</p></div>")
 
     body.append(
         "<h2>Scope</h2><div class='panel'><p class='note'>"

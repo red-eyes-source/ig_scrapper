@@ -1,13 +1,16 @@
 # Smoke-test settings — minimum volume that still exercises every code path.
 #
-# Generated from config/settings.yaml with the volume knobs turned down. A full
-# smoke cycle collects ~5 posts and ~15 comments and costs a few cents.
+# GENERATED. Do not hand-edit: run scripts/regen_smoke_config.py after changing
+# the shape of config/settings.yaml, or this file drifts and fails validation
+# with a missing-field error.
 #
 #   python run.py --config-dir config/smoke plan
 #   python run.py --config-dir config/smoke pipeline
 #
+# A full smoke cycle collects ~5 posts and ~15 comments for a few cents.
+#
 # min_term_frequency is 1 here because a five-post corpus has no term appearing
-# five times; leave it at 5 in production or every typo becomes a "theme".
+# five times; production leaves it at 5, or every typo becomes a "theme".
 project:
   name: ig-pulse
   client_label: smoke
@@ -86,6 +89,8 @@ privacy:
   narrative_retention_days: 90
   store_narrative_text: true
   max_public_figures: 10
+  attribution_top_n_per_narrative: 5
+  attribution_retention_days: 7
 analysis:
   themes:
     min_term_frequency: 1
@@ -104,6 +109,16 @@ analysis:
     comparison_window_days: 28
 report:
   output_dir: out/smoke
+  formats:
+  - json
+  - html
+  json:
+    include_posts: true
+    include_comments: true
+    include_themes: true
+    max_posts_per_narrative: 0
+    caption_max_chars: 0
+    indent: 2
   docx:
     template: null
     include_sections:

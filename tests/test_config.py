@@ -78,27 +78,54 @@ def test_allowlist_cap_is_enforced():
     assert "tripwire" in str(exc.value)
 
 
-def test_narrative_requires_targets():
+def test_narrative_requires_a_hashtag():
     with pytest.raises(ValidationError):
         Narrative(key="empty", label="Empty")
 
 
-def test_hashtags_get_prefixed():
-    n = Narrative(key="jobs", label="Jobs", hashtags=["unemployment", "#msp"])
-    assert n.hashtags == ["#unemployment", "#msp"]
+def test_hashtags_normalise_to_bare_lowercase_tokens():
+    """Canonical form is what the tag URL takes: /explore/tags/<tag>/."""
+    n = Narrative(key="jobs", label="Jobs", hashtags=["Unemployment", "#MSP"])
+    assert n.hashtags == ["unemployment", "msp"]
+
+
+def test_multi_word_hashtag_rejected_at_config_load():
+    with pytest.raises(ValidationError, match="single tokens"):
+        Narrative(key="jobs", label="Jobs", hashtags=["minimum support price"])
+
+
+def test_narrative_without_hashtags_rejected():
+    """Terms alone cannot collect: Instagram has no caption search, so such a
+    narrative would run, cost money and return nothing."""
+    with pytest.raises(ValidationError, match="no hashtags"):
+        Narrative(key="jobs", label="Jobs", terms=["job creation"])
+
+
+def test_terms_filter_captions_case_insensitively():
+    n = Narrative(key="jobs", label="Jobs", hashtags=["berozgari"],
+                  terms=["Paper Leak", "vacancy"])
+    assert n.matches_terms("Another paper leak in the news") == ["Paper Leak"]
+    assert n.matches_terms("unrelated caption") == []
+    assert n.matches_terms(None) == []
+
+
+def test_hashtag_only_narrative_keeps_everything():
+    n = Narrative(key="jobs", label="Jobs", hashtags=["berozgari"])
+    assert n.terms == []
+    assert n.search_terms == ["berozgari"]
 
 
 def test_narrative_key_must_be_slug():
     with pytest.raises(ValidationError):
-        Narrative(key="bad key!", label="Bad", terms=["x"])
+        Narrative(key="bad key!", label="Bad", hashtags=["x"])
 
 
 def test_duplicate_narrative_keys_rejected():
     with pytest.raises(ValidationError):
         NarrativeList(
             narratives=[
-                Narrative(key="a", label="A", terms=["x"]),
-                Narrative(key="a", label="B", terms=["y"]),
+                Narrative(key="a", label="A", hashtags=["x"]),
+                Narrative(key="a", label="B", hashtags=["y"]),
             ]
         )
 

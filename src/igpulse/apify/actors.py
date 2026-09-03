@@ -27,30 +27,37 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Input builders
 # --------------------------------------------------------------------------- #
-def build_hashtag_search_input(
-    terms: list[str],
+def build_hashtag_input(
+    hashtag: str,
     *,
     results_limit: int,
     lookback: str,
 ) -> dict[str, Any]:
-    """Input for apify/instagram-scraper in hashtag-search mode.
+    """Posts for one hashtag, collected via its explore/tags URL.
 
-    `search` takes a single term, so callers issue one run per term; that also
-    keeps per-narrative attribution unambiguous when a post matches two terms.
+    Deliberately NOT `search` + `searchType: "hashtag"`. That path is hashtag
+    *discovery*: it returns a single entity record carrying the tag name, a
+    post count, and related tags — and no posts at all. A run using it reports
+    "returned 1 items" and persists nothing, which reads like a parser bug
+    rather than the wrong endpoint.
+
+    Instagram also has no public caption keyword search, so free-text terms
+    cannot be collection inputs. They are applied as caption filters after
+    collection instead — see Narrative.matches_terms().
     """
-    if not terms:
-        raise ValueError("build_hashtag_search_input called with no terms")
-    if len(terms) != 1:
+    # Order matters: strip whitespace FIRST, then the hash. Doing it the other
+    # way leaves the '#' on a padded value like "  #msp  ", producing the URL
+    # /explore/tags/#msp/ — which returns nothing, silently.
+    tag = hashtag.strip().lstrip("#").strip().lower()
+    if not tag:
+        raise ValueError("build_hashtag_input called with an empty hashtag")
+    if " " in tag:
         raise ValueError(
-            "instagram-scraper accepts one `search` value per run; issue one "
-            f"run per term (got {len(terms)})"
+            f"hashtag {hashtag!r} contains a space; Instagram tags are single "
+            f"tokens. Use it as a caption `term` instead."
         )
-    term = terms[0]
     return {
-        "search": term,
-        "searchType": "hashtag" if term.startswith("#") else "user",
-        # searchLimit is capped at 250 by the actor's schema.
-        "searchLimit": min(results_limit, 250),
+        "directUrls": [f"https://www.instagram.com/explore/tags/{tag}/"],
         "resultsType": "posts",
         "resultsLimit": results_limit,
         "onlyPostsNewerThan": lookback,

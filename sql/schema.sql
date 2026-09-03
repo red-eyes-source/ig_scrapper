@@ -114,6 +114,41 @@ CREATE INDEX IF NOT EXISTS narrative_comment_post_idx
     ON narrative_comment (post_id);
 
 -- ---------------------------------------------------------------------------
+-- POST ATTRIBUTION — named handles for CITED posts only.
+--
+-- A quoted post needs an author for the citation to be checkable; that is a
+-- real reporting requirement. What it does not need is a handle on all
+-- 100,000 collected authors, which is a different artefact with a different
+-- risk profile.
+--
+-- So this table is bounded by construction:
+--   * posts only, never comments (commenters are not cited as sources)
+--   * at most privacy.attribution_top_n_per_narrative rows per narrative per
+--     run, chosen by engagement — citation scale, not corpus scale
+--   * its own short retention, independent of the narrative rows
+--
+-- There is deliberately no index on handle and no per-handle aggregate view.
+-- Adding either turns a citation table into a profile store.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS post_attribution (
+    id              BIGSERIAL PRIMARY KEY,
+    run_id          BIGINT      NOT NULL REFERENCES ingest_run(id) ON DELETE CASCADE,
+    post_id         BIGINT      NOT NULL REFERENCES narrative_post(id) ON DELETE CASCADE,
+    author_handle   TEXT        NOT NULL,
+    captured_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT post_attribution_unique UNIQUE (post_id)
+);
+
+CREATE INDEX IF NOT EXISTS post_attribution_post_idx
+    ON post_attribution (post_id);
+
+COMMENT ON TABLE post_attribution IS
+    'Author handles for the small set of posts eligible to be quoted in a '
+    'report. Capped per narrative per run and separately retained. Do not add '
+    'a handle index or a per-handle aggregate: this is a citation table, not '
+    'a profile store.';
+
+-- ---------------------------------------------------------------------------
 -- PUBLIC FIGURE LENS — named, persistent, longitudinal. Allowlisted only.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS figure_snapshot (

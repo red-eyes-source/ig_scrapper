@@ -1,8 +1,19 @@
-httpx==0.27.2
-psycopg[binary]==3.2.3
-psycopg-pool==3.2.3
-pydantic==2.9.2
-PyYAML==6.0.2
-python-dotenv==1.0.1
-python-docx==1.1.2
-tenacity==9.0.0
+# Floors, not exact pins.
+#
+# The original exact pins broke on Python 3.14: pydantic-core, psycopg-binary
+# and PyYAML all shipped their first cp314 wheels well above the pinned
+# versions, so pip fell back to building from source and failed. Each floor
+# below is the first release with a Python 3.14 wheel, so the set resolves on
+# 3.11 through 3.14.
+#
+# For byte-identical reproducibility in deployment, generate a lockfile from a
+# working environment: pip freeze > requirements.lock
+
+httpx>=0.27.2,<1.0
+psycopg[binary]>=3.2.10,<4.0      # 3.2.10 = first cp314 wheel
+psycopg-pool>=3.2.4,<4.0
+pydantic>=2.12.0,<3.0             # 2.12 pairs with pydantic-core 2.41 (cp314)
+PyYAML>=6.0.3,<7.0                # 6.0.3 = first cp314 wheel
+python-dotenv>=1.0.1,<2.0
+python-docx>=1.1.2,<2.0
+tenacity>=9.0.0,<10.0

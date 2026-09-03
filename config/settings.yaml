@@ -88,6 +88,12 @@ privacy:
   # Hard cap: refuse to start if the allowlist exceeds this, as a tripwire
   # against the list quietly growing into a general-purpose watchlist.
   max_public_figures: 250
+  # Quoted posts carry their author's handle so a citation can be checked.
+  # Only the top N by engagement per narrative per run are attributed, and the
+  # names expire well before the aggregate rows do. Set to 0 to attribute
+  # nothing. Comments are never attributed.
+  attribution_top_n_per_narrative: 20
+  attribution_retention_days: 30
 
 analysis:
   themes:
@@ -109,6 +115,18 @@ analysis:
 
 report:
   output_dir: "out"
+  # Which files a `report` run writes. Add "docx" to re-enable the Word
+  # document; the code path is intact, just off by default.
+  formats: ["json", "html"]
+  json:
+    include_posts: true
+    include_comments: true
+    include_themes: true
+    # 0 = no cap. Raise a cap rather than truncating captions if the file gets
+    # unwieldy; a truncated caption silently corrupts downstream text analysis.
+    max_posts_per_narrative: 0
+    caption_max_chars: 0
+    indent: 2
   docx:
     template: null                # null = build from scratch
     include_sections: ["narrative", "public_figure", "own_side", "methodology"]

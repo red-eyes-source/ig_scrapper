@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """ig-pulse CLI.
 
+    python run.py dashboard          # local config editor, live cost estimate
     python run.py plan               # dry-run volume + cost estimate
+    python run.py debug-dataset --actor-run-id <id>
     python run.py test-connection
     python run.py init-db
     python run.py ingest --lens all
@@ -24,6 +26,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Checked before any project import: the codebase uses `X | Y` unions and
+# `dataclass(slots=True)`, so an older interpreter fails with a SyntaxError
+# that says nothing useful about the actual problem.
+if sys.version_info < (3, 11):
+    sys.exit(
+        f"ig-pulse requires Python 3.11 or newer; this is "
+        f"{sys.version_info.major}.{sys.version_info.minor}. "
+        f"On macOS/Linux the command is usually `python3`, not `python`."
+    )
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from dotenv import load_dotenv  # noqa: E402
@@ -32,14 +44,16 @@ from igpulse.analyze import metrics as metrics_mod  # noqa: E402
 from igpulse.analyze import planner  # noqa: E402
 from igpulse.analyze import sentiment as sentiment_mod  # noqa: E402
 from igpulse.analyze import themes as themes_mod  # noqa: E402
-from igpulse.apify.client import ApifyClient  # noqa: E402
+from igpulse.apify.client import ApifyClient, looks_like_placeholder  # noqa: E402
 from igpulse.config import AppConfig, load_config  # noqa: E402
+from igpulse.dashboard.server import serve as serve_dashboard  # noqa: E402
 from igpulse.ingest import figures as figures_mod  # noqa: E402
 from igpulse.ingest import narrative as narrative_mod  # noqa: E402
 from igpulse.privacy.author_policy import AuthorPolicy  # noqa: E402
 from igpulse.report.docx_report import build_report  # noqa: E402
 from igpulse.report.html_dashboard import build_dashboard  # noqa: E402
-from igpulse.store.db import Database  # noqa: E402
+from igpulse.report.json_export import build_json  # noqa: E402
+from igpulse.store.db import Database, DatabaseUnavailable  # noqa: E402
 
 logger = logging.getLogger("igpulse")
 
@@ -50,6 +64,12 @@ def _setup_logging(cfg: AppConfig) -> None:
         format=cfg.settings.logging.format,
         stream=sys.stderr,
     )
+    # httpx logs every request at INFO, which buries our own output under a
+    # line per actor call. The Apify client already logs what matters at the
+    # right level. Set logging.level to DEBUG in settings.yaml to see them.
+    if cfg.settings.logging.level.upper() != "DEBUG":
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _apify_token() -> str:
@@ -65,8 +85,23 @@ def cmd_validate(cfg: AppConfig, _args: argparse.Namespace) -> int:
     figures = cfg.public_figures.figures
     print(f"config fingerprint : {cfg.fingerprint()}")
     print(f"narratives         : {len(cfg.narratives.narratives)}")
+    total_terms = 0
     for n in cfg.narratives.narratives:
-        print(f"  - {n.key}: {len(n.search_terms)} search term(s)")
+        total_terms += len(n.search_terms)
+        print(f"  - {n.key} ({n.label})")
+        # Print the terms themselves, not just a count. One Apify run is issued
+        # per term, so this list is exactly what the next ingest will search
+        # and exactly what drives the bill.
+        for term in n.search_terms:
+            print(f"      #{term}  [collects posts]")
+        for term in n.terms:
+            print(f"      \"{term}\"  [caption filter, no actor run]")
+    if total_terms:
+        print(f"  {total_terms} hashtag(s) total "
+              f"= {total_terms} scrape run(s) per cycle")
+        print("  Keyword terms filter what the hashtags return; Instagram has "
+              "no caption search,")
+        print("  so they never trigger a run of their own.")
     print(f"public figures     : {len(figures)}"
           f" (cap {cfg.settings.privacy.max_public_figures})")
     for category in ("elected_official", "party_official",
@@ -84,6 +119,17 @@ def cmd_validate(cfg: AppConfig, _args: argparse.Namespace) -> int:
         print("WARNING: allowlist is empty — the public-figure and own-side "
               "lenses will collect nothing.", file=sys.stderr)
     return 0
+
+
+def cmd_dashboard(cfg: AppConfig, args: argparse.Namespace) -> int:
+    """Local config editor with a live cost estimate."""
+    config_dir = Path(args.config_dir) if args.config_dir else (
+        Path(__file__).resolve().parent / "config"
+    )
+    _ = cfg  # loaded already to fail fast on a broken config
+    return serve_dashboard(
+        config_dir, port=args.port, open_browser=not args.no_browser
+    )
 
 
 def cmd_plan(cfg: AppConfig, _args: argparse.Namespace) -> int:
@@ -124,6 +170,44 @@ def cmd_plan(cfg: AppConfig, _args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_debug_dataset(cfg: AppConfig, args: argparse.Namespace) -> int:
+    """Dump raw records from a finished Apify run.
+
+    Free: reading a dataset is not an actor run. Use it when a run reports
+    items returned but nothing stored — the record shape tells you whether the
+    actor gave you posts, a hashtag entity, or an error object.
+    """
+    import json
+
+    with ApifyClient(_apify_token(), cfg.settings.apify) as client:
+        run = client.get_run(args.actor_run_id)
+        print(f"run {run.run_id}  status={run.status}  "
+              f"dataset={run.dataset_id}\n")
+        records = list(
+            client.iter_dataset_items(run.dataset_id, max_items=args.limit)
+        )
+
+    if not records:
+        print("dataset is empty — the actor produced no output at all.")
+        return 1
+
+    print(f"{len(records)} record(s); showing up to {args.limit}\n")
+    for i, record in enumerate(records, 1):
+        print(f"--- record {i} ---")
+        print(f"keys: {sorted(record)}")
+        looks_like_post = bool(
+            record.get("shortCode") or record.get("shortcode")
+        )
+        print(f"parses as a post: {'yes' if looks_like_post else 'NO'}")
+        if not looks_like_post:
+            print("  This is not a post record. A record carrying `name` and "
+                  "`postsCount` is a hashtag entity, which means the run used "
+                  "hashtag *discovery* rather than post collection.")
+        print(json.dumps(record, indent=2, default=str)[:1500])
+        print()
+    return 0
+
+
 def cmd_test_connection(cfg: AppConfig, _args: argparse.Namespace) -> int:
     """Verify Apify and Postgres connectivity without starting an actor.
 
@@ -135,10 +219,21 @@ def cmd_test_connection(cfg: AppConfig, _args: argparse.Namespace) -> int:
     print("Apify")
     token = os.environ.get("APIFY_TOKEN", "").strip()
     if not token:
-        print("  token          : MISSING — set APIFY_TOKEN in .env")
+        print("  token          : MISSING")
+        print("  hint           : set APIFY_TOKEN in .env")
+        failures += 1
+    elif looks_like_placeholder(token):
+        masked = f"{token[:9]}…{token[-4:]}" if len(token) > 16 else token
+        print(f"  token          : {masked}  <- PLACEHOLDER, not a real token")
+        print("  hint           : .env still holds the example value. Get a "
+              "real one from the")
+        print("                   Apify console: Settings -> API & "
+              "Integrations -> Personal")
+        print("                   API token, then set APIFY_TOKEN=apify_api_… "
+              "in .env")
         failures += 1
     else:
-        masked = f"{token[:9]}…{token[-4:]}" if len(token) > 16 else "…"
+        masked = f"{token[:9]}…{token[-4:]}"
         print(f"  token          : {masked}")
         try:
             with ApifyClient(token, cfg.settings.apify) as client:
@@ -160,8 +255,18 @@ def cmd_test_connection(cfg: AppConfig, _args: argparse.Namespace) -> int:
                           f"{'reachable' if ok else 'NOT FOUND'}")
                     if not ok:
                         failures += 1
-        except Exception as exc:  # noqa: BLE001 - surface the reason verbatim
-            print(f"  authenticated  : NO — {exc}")
+        except Exception as exc:  # noqa: BLE001
+            import httpx
+
+            if isinstance(exc, httpx.HTTPStatusError) and \
+                    exc.response.status_code == 401:
+                print("  authenticated  : NO — token rejected (HTTP 401)")
+                print("  hint           : the token is wrong, revoked, or from "
+                      "a different account.")
+                print("                   Regenerate it in the Apify console "
+                      "and update .env")
+            else:
+                print(f"  authenticated  : NO — {str(exc).splitlines()[0]}")
             failures += 1
 
     print("\nPostgres")
@@ -185,10 +290,12 @@ def cmd_test_connection(cfg: AppConfig, _args: argparse.Namespace) -> int:
             if not applied:
                 failures += 1
     except Exception as exc:  # noqa: BLE001
+        from igpulse.store.db import _connection_hint
+
         detail = str(exc).strip().splitlines()[0]
         print(f"  connected      : NO — {detail}")
-        print("  hint           : check PGHOST/PGPORT/PGDATABASE/PGUSER/"
-              "PGPASSWORD in .env")
+        for line in _connection_hint(detail).splitlines():
+            print(f"  {line}" if line.startswith("    ") else f"  hint  {line}")
         failures += 1
 
     print()
@@ -264,6 +371,25 @@ def cmd_report(cfg: AppConfig, args: argparse.Namespace) -> int:
             """,
             (args.run_id,),
         )
+        formats = cfg.settings.report.formats
+        jcfg = cfg.settings.report.json_options
+        samples = db.sample_posts(run_id=args.run_id, per_narrative=5)
+        full_posts = (
+            db.full_posts(
+                run_id=args.run_id,
+                with_comments=jcfg.include_comments,
+                max_per_narrative=jcfg.max_posts_per_narrative,
+            )
+            if "json" in formats and jcfg.include_posts
+            else None
+        )
+        figure_rows = (
+            db.figure_export(run_id=args.figure_run_id or args.run_id)
+            if "json" in formats
+            else None
+        )
+        provenance = db.run_provenance(args.run_id)
+        window = db.collection_window(args.run_id)
         sent_rows = db.fetch(
             """
             SELECT label, COUNT(*) AS n FROM sentiment_score ss
@@ -290,14 +416,23 @@ def cmd_report(cfg: AppConfig, args: argparse.Namespace) -> int:
         scored=scored, uncertain=uncertain, skipped_short=0
     )
 
-    kwargs = dict(
+    common = dict(
         narratives=narratives, figures=figures, themes=themes,
         sentiment=summary, generated_at=generated_at,
+        provenance=provenance, window=window,
     )
-    docx_path = build_report(cfg, **kwargs)
-    html_path = build_dashboard(cfg, **kwargs)
-    print(f"wrote {docx_path}")
-    print(f"wrote {html_path}")
+    written: list[Path] = []
+    if "json" in formats:
+        written.append(build_json(
+            cfg, posts=full_posts, figure_rows=figure_rows, **common
+        ))
+    if "html" in formats:
+        written.append(build_dashboard(cfg, samples=samples, **common))
+    if "docx" in formats:
+        written.append(build_report(cfg, samples=samples, **common))
+
+    for path in written:
+        print(f"wrote {path}  ({path.stat().st_size / 1024:.1f} KB)")
     return 0
 
 
@@ -306,7 +441,11 @@ def cmd_purge(cfg: AppConfig, _args: argparse.Namespace) -> int:
         deleted = db.purge_expired_narrative_rows(
             cfg.settings.privacy.narrative_retention_days
         )
-    print(f"purged {deleted} narrative posts past retention")
+        names = db.purge_expired_attribution(
+            cfg.settings.privacy.attribution_retention_days
+        )
+    print(f"purged {deleted} narrative posts and {names} attributed handles "
+          f"past retention")
     return 0
 
 
@@ -343,7 +482,18 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("validate").set_defaults(func=cmd_validate)
+    p_dash = sub.add_parser("dashboard")
+    p_dash.add_argument("--port", type=int, default=8765)
+    p_dash.add_argument("--no-browser", action="store_true")
+    p_dash.set_defaults(func=cmd_dashboard)
+
     sub.add_parser("plan").set_defaults(func=cmd_plan)
+
+    p_debug = sub.add_parser("debug-dataset")
+    p_debug.add_argument("--actor-run-id", required=True,
+                         help="Apify run ID, e.g. from ingest_run.actor_run_ids")
+    p_debug.add_argument("--limit", type=int, default=3)
+    p_debug.set_defaults(func=cmd_debug_dataset)
     sub.add_parser("test-connection").set_defaults(func=cmd_test_connection)
     sub.add_parser("init-db").set_defaults(func=cmd_init_db)
     sub.add_parser("purge").set_defaults(func=cmd_purge)
@@ -372,6 +522,9 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(cfg)
     try:
         return args.func(cfg, args)
+    except DatabaseUnavailable as exc:
+        print(f"\nPostgres is not reachable.\n\n{exc}\n", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return 130

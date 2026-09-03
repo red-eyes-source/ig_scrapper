@@ -1,0 +1,78 @@
+# Starter narrative set for Indian political discourse.
+#
+# Copy to config/narratives.yaml and edit down to what your client actually
+# cares about. Do NOT run this whole file as-is — see the cost note at the
+# bottom.
+#
+# Every bucket here is issue-shaped: it names a policy area, not a person or an
+# account. That is the design constraint the pipeline is built around. An
+# actor-shaped bucket ("posts by X", "#XResign") collapses the aggregation
+# model back into person tracking, and theme extraction strips @mentions
+# specifically so a frequently-tagged account cannot surface as a "theme".
+#
+# Hashtags return volume; keywords return caption matches and tend to be
+# narrower but more precise. Most buckets want both.
+#
+# Include the Hindi/Hinglish forms your audience actually uses — berozgari,
+# mehngai, kisan. English-only terms systematically under-sample the discourse
+# you are trying to measure, which is a sampling error that looks like a
+# finding.
+
+narratives:
+  - key: "jobs_unemployment"
+    label: "Jobs and unemployment"
+    hashtags: ["unemployment", "berozgari", "jobcrisis"]
+    terms: ["job creation", "recruitment exam", "paper leak", "vacancy"]
+
+  - key: "prices_inflation"
+    label: "Prices and cost of living"
+    hashtags: ["inflation", "mehngai", "pricerise"]
+    terms: ["petrol price", "lpg cylinder", "food inflation", "electricity bill"]
+
+  - key: "farm_policy"
+    label: "Farm policy and MSP"
+    hashtags: ["msp", "kisan", "farmers"]
+    terms: ["minimum support price", "crop insurance", "mandi", "fertiliser"]
+
+  - key: "healthcare"
+    label: "Healthcare access"
+    hashtags: ["healthcare", "ayushmanbharat"]
+    terms: ["district hospital", "medical college", "health insurance scheme"]
+
+  - key: "education"
+    label: "Education and skilling"
+    hashtags: ["education", "nep2020"]
+    terms: ["school infrastructure", "scholarship delay", "skill development"]
+
+  - key: "infrastructure"
+    label: "Infrastructure delivery"
+    hashtags: ["infrastructure", "metrorail"]
+    terms: ["highway project", "road condition", "smart city", "water supply"]
+
+  - key: "welfare_delivery"
+    label: "Welfare scheme delivery"
+    hashtags: ["welfare"]
+    terms: ["direct benefit transfer", "ration card", "pension scheme",
+            "housing scheme"]
+
+  - key: "women_safety"
+    label: "Women's safety and policing"
+    hashtags: ["womensafety"]
+    terms: ["women safety", "police response", "fast track court"]
+
+# ---------------------------------------------------------------------------
+# Cost note — read before running this
+# ---------------------------------------------------------------------------
+# One Apify run is issued per search term. This file has 8 narratives and
+# roughly 50 terms, so at the default results_per_term (200) and
+# comments_per_post (50) a single cycle would be on the order of 10,000 posts
+# and 500,000 comments — several thousand dollars.
+#
+# Always check before running:
+#     python run.py validate
+#     python run.py plan
+#
+# Sensible first pass: keep 2-3 narratives, 3-4 terms each, and set
+# results_per_term to 25 with comments_per_post at 10. That lands around $3-4
+# per cycle. Look at what actually comes back, drop the terms returning noise,
+# then scale the numbers up rather than the term count.
