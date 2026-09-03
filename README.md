@@ -1,3 +1,5 @@
+Running SOP - https://claude.ai/code/artifact/b71291c4-c281-493f-998a-018cf32b1ecc
+
 # ig-pulse
 
 Instagram discourse monitoring for political communications work. One pipeline,
